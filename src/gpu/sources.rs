@@ -1,6 +1,7 @@
 use std::ffi::CStr;
 
 use ff_cl_gen as ffgen;
+use log::info;
 use rust_gpu_tools::device::{Brand, Device, Framework};
 use rust_gpu_tools::program::Program;
 use rust_gpu_tools::{cuda, opencl};
@@ -74,18 +75,29 @@ where
 
 const SOURCE_BIN: &[u8] = b"./src/gpu/multiexp/multiexp32.fatbin\0";
 
+/// Returns the program for the default [`rust_gpu_tools::device::Framework`].
 pub fn program<E>(device: &Device) -> GPUResult<Program>
 where
     E: Engine,
 {
-    match device.framework() {
+    program_use_framework::<E>(device, &device.framework())
+}
+
+/// Returns the program for the specified [`rust_gpu_tools::device::Framework`].
+pub fn program_use_framework<E>(device: &Device, framework: &Framework) -> GPUResult<Program>
+where
+    E: Engine,
+{
+    match framework {
         Framework::Cuda => {
+            info!("Using kernel on CUDA.");
             let filename = CStr::from_bytes_with_nul(SOURCE_BIN).unwrap();
             let cuda_device = device.cuda_device()?;
             let program = cuda::Program::from_cuda(cuda_device, &filename)?;
             Ok(Program::Cuda(program))
         }
         Framework::Opencl => {
+            info!("Using kernel on OpenCL.");
             let src = kernel::<E>(device.brand() == Brand::Nvidia);
             let opencl_device = device.opencl_device()?;
             let program = opencl::Program::from_opencl(opencl_device, &src)?;

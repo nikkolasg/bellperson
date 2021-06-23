@@ -5,8 +5,9 @@ use crate::gpu::{
 };
 use ff::Field;
 use log::info;
-use rust_gpu_tools::device::{Brand, Device};
+use rust_gpu_tools::device::{Brand, Device, Framework};
 use rust_gpu_tools::opencl;
+use rust_gpu_tools::program::Program;
 use std::cmp;
 
 const LOG2_MAX_ELEMENTS: usize = 32; // At most 2^32 elements is supported.
@@ -31,7 +32,7 @@ where
     pub fn create(priority: bool) -> GPUResult<FFTKernel<E>> {
         let lock = locks::GPULock::lock();
 
-        let devices = opencl::Device::all();
+        let devices = Device::all();
         if devices.is_empty() {
             return Err(GPUError::Simple("No working GPUs found!"));
         }
@@ -39,9 +40,12 @@ where
         // Select the first device for FFT
         let device = devices[0];
 
-        let src = sources::kernel::<E>(device.brand() == Brand::Nvidia);
-
-        let program = opencl::Program::from_opencl(&device, &src)?;
+        // Curently the FFT kernel is only implemented for OpenCL and not for CUDA
+        let program = match sources::program_use_framework::<E>(&device, &Framework::Opencl) {
+            Ok(Program::Opencl(program)) => program,
+            Ok(_) => unreachable!(),
+            Err(error) => return Err(error),
+        };
         let pq_buffer = program.create_buffer::<E::Fr>(1 << MAX_LOG2_RADIX >> 1)?;
         let omegas_buffer = program.create_buffer::<E::Fr>(LOG2_MAX_ELEMENTS)?;
 
