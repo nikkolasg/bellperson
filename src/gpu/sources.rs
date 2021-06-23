@@ -73,6 +73,7 @@ where
     .join("\n\n")
 }
 
+// (cd src/gpu/multiexp; nvcc -O6 -fatbin -arch=sm_86 -gencode=arch=compute_86,code=sm_86 -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_75,code=sm_75 multiexp32.cu)
 const SOURCE_BIN: &[u8] = b"./src/gpu/multiexp/multiexp32.fatbin\0";
 
 /// Returns the program for the default [`rust_gpu_tools::device::Framework`].
