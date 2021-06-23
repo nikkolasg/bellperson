@@ -9,9 +9,13 @@ use ff::{PrimeField, ScalarEngine};
 use groupy::{CurveAffine, CurveProjective};
 use log::{error, info};
 use rayon::prelude::*;
-use rust_gpu_tools::*;
+use rust_gpu_tools::device::{Brand, Device};
+use rust_gpu_tools::program::Program;
+use rust_gpu_tools::{cuda, define_closures, opencl};
 use std::any::TypeId;
 use std::sync::Arc;
+
+use std::ffi::CStr;
 
 const MAX_WINDOW_SIZE: usize = 10;
 const LOCAL_WORK_SIZE: usize = 256;
@@ -37,8 +41,7 @@ pub struct SingleMultiexpKernel<E>
 where
     E: Engine,
 {
-    program: opencl::Program,
-
+    program: Program,
     core_count: usize,
     n: usize,
 
@@ -97,22 +100,24 @@ fn exp_size<E: Engine>() -> usize {
     std::mem::size_of::<<E::Fr as ff::PrimeField>::Repr>()
 }
 
+const SOURCE_BIN: &[u8] = b"./src/gpu/multiexp/multiexp32.fatbin\0";
+
 impl<E> SingleMultiexpKernel<E>
 where
     E: Engine,
 {
-    pub fn create(d: opencl::Device, priority: bool) -> GPUResult<SingleMultiexpKernel<E>> {
-        let src = sources::kernel::<E>(d.brand() == opencl::Brand::Nvidia);
-
+    pub fn create(device: &Device, priority: bool) -> GPUResult<SingleMultiexpKernel<E>> {
         let exp_bits = exp_size::<E>() * 8;
-        let core_count = utils::get_core_count(&d);
-        let mem = d.memory();
+        let core_count = utils::get_core_count(&device.name());
+        let mem = device.memory();
         let max_n = calc_chunk_size::<E>(mem, core_count);
         let best_n = calc_best_chunk_size(MAX_WINDOW_SIZE, core_count, exp_bits);
         let n = std::cmp::min(max_n, best_n);
 
+        let program = sources::program::<E>(device)?;
+
         Ok(SingleMultiexpKernel {
-            program: opencl::Program::from_opencl(&d, &src)?,
+            program,
             core_count,
             n,
             priority,
@@ -143,62 +148,58 @@ where
         // be `num_groups` * `num_windows` threads in total.
         // Each thread will use `num_groups` * `num_windows` * `bucket_len` buckets.
 
-        let results = self
-            .program
-            .run(|| -> GPUResult<Vec<<G as CurveAffine>::Projective>> {
-                let base_buffer = self.program.create_buffer::<G>(n)?;
-                self.program.write_from_buffer(&base_buffer, 0, bases)?;
-                let exp_buffer = self
-                    .program
-                    .create_buffer::<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>(
-                    n,
-                )?;
-                self.program.write_from_buffer(&exp_buffer, 0, exps)?;
+        let closures = define_closures!(|program: &opencl::Program | &cuda::Program|
+         -> GPUResult<Vec<<G as CurveAffine>::Projective>> {
+            let mut base_buffer = program.create_buffer::<G>(n)?;
+            program.write_from_buffer(&mut base_buffer, 0, bases)?;
+            let mut exp_buffer = program
+                .create_buffer::<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>(
+                n,
+            )?;
+            program.write_from_buffer(&mut exp_buffer, 0, exps)?;
 
-                let bucket_buffer = self
-                    .program
-                    .create_buffer::<<G as CurveAffine>::Projective>(
-                        2 * self.core_count * bucket_len,
-                    )?;
-                let result_buffer = self
-                    .program
-                    .create_buffer::<<G as CurveAffine>::Projective>(2 * self.core_count)?;
+            let bucket_buffer = program.create_buffer::<<G as CurveAffine>::Projective>(
+                2 * self.core_count * bucket_len,
+            )?;
+            let result_buffer =
+                program.create_buffer::<<G as CurveAffine>::Projective>(2 * self.core_count)?;
 
-                // Make global work size divisible by `LOCAL_WORK_SIZE`
-                let mut global_work_size = num_windows * num_groups;
-                global_work_size +=
-                    (LOCAL_WORK_SIZE - (global_work_size % LOCAL_WORK_SIZE)) % LOCAL_WORK_SIZE;
+            // Make global work size divisible by `LOCAL_WORK_SIZE`
+            let mut global_work_size = num_windows * num_groups;
+            global_work_size +=
+                (LOCAL_WORK_SIZE - (global_work_size % LOCAL_WORK_SIZE)) % LOCAL_WORK_SIZE;
 
-                let kernel = self.program.create_kernel(
-                    if TypeId::of::<G>() == TypeId::of::<E::G1Affine>() {
-                        "G1_bellman_multiexp"
-                    } else if TypeId::of::<G>() == TypeId::of::<E::G2Affine>() {
-                        "G2_bellman_multiexp"
-                    } else {
-                        return Err(GPUError::Simple("Only E::G1 and E::G2 are supported!"));
-                    },
-                    global_work_size,
-                    LOCAL_WORK_SIZE,
-                )?;
+            let kernel = program.create_kernel(
+                if TypeId::of::<G>() == TypeId::of::<E::G1Affine>() {
+                    "G1_bellman_multiexp"
+                } else if TypeId::of::<G>() == TypeId::of::<E::G2Affine>() {
+                    "G2_bellman_multiexp"
+                } else {
+                    return Err(GPUError::Simple("Only E::G1 and E::G2 are supported!"));
+                },
+                global_work_size,
+                LOCAL_WORK_SIZE,
+            )?;
 
-                kernel
-                    .arg(&base_buffer)
-                    .arg(&bucket_buffer)
-                    .arg(&result_buffer)
-                    .arg(&exp_buffer)
-                    .arg(&(n as u32))
-                    .arg(&(num_groups as u32))
-                    .arg(&(num_windows as u32))
-                    .arg(&(window_size as u32))
-                    .run()?;
+            kernel
+                .arg(&base_buffer)
+                .arg(&bucket_buffer)
+                .arg(&result_buffer)
+                .arg(&exp_buffer)
+                .arg(&(n as u32))
+                .arg(&(num_groups as u32))
+                .arg(&(num_windows as u32))
+                .arg(&(window_size as u32))
+                .run()?;
 
-                let mut results =
-                    vec![<G as CurveAffine>::Projective::zero(); num_groups * num_windows];
-                self.program
-                    .read_into_buffer(&result_buffer, 0, &mut results)?;
+            let mut results =
+                vec![<G as CurveAffine>::Projective::zero(); num_groups * num_windows];
+            program.read_into_buffer(&result_buffer, 0, &mut results)?;
 
-                Ok(results)
-            })?;
+            Ok(results)
+        });
+
+        let results = self.program.run(closures)?;
 
         // Using the algorithm below, we can calculate the final result by accumulating the results
         // of those `NUM_GROUPS` * `NUM_WINDOWS` threads.
@@ -219,6 +220,9 @@ where
     }
 }
 
+// TODO vmx 2021-06-10: Looks like some rustacuda type we use doesn't implement `Send`
+unsafe impl<E: Engine> Send for SingleMultiexpKernel<E> {}
+
 // A struct that containts several multiexp kernels for different devices
 pub struct MultiexpKernel<E>
 where
@@ -235,11 +239,13 @@ where
     pub fn create(priority: bool) -> GPUResult<MultiexpKernel<E>> {
         let lock = locks::GPULock::lock();
 
-        let devices = opencl::Device::all();
+        //let devices = opencl::Device::all();
+        //let devices = cuda::Device::all();
+        let devices = Device::all();
 
         let kernels: Vec<_> = devices
             .into_iter()
-            .map(|d| (d, SingleMultiexpKernel::<E>::create(d.clone(), priority)))
+            .map(|d| (d, SingleMultiexpKernel::<E>::create(&d, priority)))
             .filter_map(|(device, res)| {
                 if let Err(ref e) = res {
                     error!(

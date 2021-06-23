@@ -5,7 +5,8 @@ use crate::gpu::{
 };
 use ff::Field;
 use log::info;
-use rust_gpu_tools::*;
+use rust_gpu_tools::device::{Brand, Device};
+use rust_gpu_tools::opencl;
 use std::cmp;
 
 const LOG2_MAX_ELEMENTS: usize = 32; // At most 2^32 elements is supported.
@@ -38,7 +39,7 @@ where
         // Select the first device for FFT
         let device = devices[0];
 
-        let src = sources::kernel::<E>(device.brand() == opencl::Brand::Nvidia);
+        let src = sources::kernel::<E>(device.brand() == Brand::Nvidia);
 
         let program = opencl::Program::from_opencl(&device, &src)?;
         let pq_buffer = program.create_buffer::<E::Fr>(1 << MAX_LOG2_RADIX >> 1)?;
@@ -110,7 +111,8 @@ where
                 pq[i].mul_assign(&twiddle);
             }
         }
-        self.program.write_from_buffer(&self.pq_buffer, 0, &pq)?;
+        self.program
+            .write_from_buffer(&mut self.pq_buffer, 0, &pq)?;
 
         // Precalculate [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
         let mut omegas = vec![E::Fr::zero(); 32];
@@ -119,7 +121,7 @@ where
             omegas[i] = omegas[i - 1].pow([2u64]);
         }
         self.program
-            .write_from_buffer(&self.omegas_buffer, 0, &omegas)?;
+            .write_from_buffer(&mut self.omegas_buffer, 0, &omegas)?;
 
         Ok(())
     }
@@ -135,7 +137,7 @@ where
         let max_deg = cmp::min(MAX_LOG2_RADIX, log_n);
         self.setup_pq_omegas(omega, n, max_deg)?;
 
-        self.program.write_from_buffer(&src_buffer, 0, &*a)?;
+        self.program.write_from_buffer(&mut src_buffer, 0, &*a)?;
         let mut log_p = 0u32;
         while log_p < log_n {
             let deg = cmp::min(max_deg, log_n - log_p);

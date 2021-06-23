@@ -1,5 +1,13 @@
-use crate::bls::Engine;
+use std::ffi::CStr;
+
 use ff_cl_gen as ffgen;
+use rust_gpu_tools::device::{Brand, Device, Framework};
+use rust_gpu_tools::program::Program;
+use rust_gpu_tools::{cuda, opencl};
+
+use crate::bls::Engine;
+
+use super::error::{GPUError, GPUResult};
 
 // Instead of having a very large OpenCL program written for a specific curve, with a lot of
 // rudandant codes (As OpenCL doesn't have generic types or templates), this module will dynamically
@@ -62,4 +70,26 @@ where
         multiexp("G2", "Fr"),
     ]
     .join("\n\n")
+}
+
+const SOURCE_BIN: &[u8] = b"./src/gpu/multiexp/multiexp32.fatbin\0";
+
+pub fn program<E>(device: &Device) -> GPUResult<Program>
+where
+    E: Engine,
+{
+    match device.framework() {
+        Framework::Cuda => {
+            let filename = CStr::from_bytes_with_nul(SOURCE_BIN).unwrap();
+            let cuda_device = device.cuda_device()?;
+            let program = cuda::Program::from_cuda(cuda_device, &filename)?;
+            Ok(Program::Cuda(program))
+        }
+        Framework::Opencl => {
+            let src = kernel::<E>(device.brand() == Brand::Nvidia);
+            let opencl_device = device.opencl_device()?;
+            let program = opencl::Program::from_opencl(opencl_device, &src)?;
+            Ok(Program::Opencl(program))
+        }
+    }
 }
