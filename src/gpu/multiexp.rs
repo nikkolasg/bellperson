@@ -153,9 +153,7 @@ where
             let mut base_buffer = program.create_buffer::<G>(n)?;
             program.write_from_buffer(&mut base_buffer, 0, bases)?;
             let mut exp_buffer = program
-                .create_buffer::<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>(
-                n,
-            )?;
+                .create_buffer::<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>(n)?;
             program.write_from_buffer(&mut exp_buffer, 0, exps)?;
 
             let bucket_buffer = program.create_buffer::<<G as CurveAffine>::Projective>(
@@ -164,10 +162,10 @@ where
             let result_buffer =
                 program.create_buffer::<<G as CurveAffine>::Projective>(2 * self.core_count)?;
 
-            // Make global work size divisible by `LOCAL_WORK_SIZE`
-            let mut global_work_size = num_windows * num_groups;
-            global_work_size +=
-                (LOCAL_WORK_SIZE - (global_work_size % LOCAL_WORK_SIZE)) % LOCAL_WORK_SIZE;
+            // The global work size follows CUDA's definition and is the number of
+            // `LOCAL_WORK_SIZE` sized thread groups.
+            let global_work_size =
+                (num_windows * num_groups + LOCAL_WORK_SIZE - 1) / LOCAL_WORK_SIZE;
 
             let kernel = program.create_kernel(
                 if TypeId::of::<G>() == TypeId::of::<E::G1Affine>() {
@@ -192,8 +190,7 @@ where
                 .arg(&(window_size as u32))
                 .run()?;
 
-            let mut results =
-                vec![<G as CurveAffine>::Projective::zero(); num_groups * num_windows];
+            let mut results = vec![<G as CurveAffine>::Projective::zero(); 2 * self.core_count];
             program.read_into_buffer(&result_buffer, 0, &mut results)?;
 
             Ok(results)
