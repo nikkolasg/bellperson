@@ -1,3 +1,4 @@
+use std::env;
 use std::ffi::CStr;
 
 use ff_cl_gen as ffgen;
@@ -76,12 +77,23 @@ where
 // (cd src/gpu/multiexp; nvcc -O6 -fatbin -arch=sm_86 -gencode=arch=compute_86,code=sm_86 -gencode=arch=compute_80,code=sm_80 -gencode=arch=compute_75,code=sm_75 multiexp32.cu)
 const SOURCE_BIN: &[u8] = b"./src/gpu/multiexp/multiexp32.fatbin\0";
 
-/// Returns the program for the default [`rust_gpu_tools::device::Framework`].
+/// Returns the program for the preferred [`rust_gpu_tools::device::Framework`].
+///
+/// If the device supports CUDA, then CUDA is used, else OpenCL. You can force a selection with
+/// the environment variable `BELLMAN_GPU_FRAMEWORK`, which can be set either to `cuda` or `opencl`.
 pub fn program<E>(device: &Device) -> GPUResult<Program>
 where
     E: Engine,
 {
-    program_use_framework::<E>(device, &device.framework())
+    let framework = match env::var("BELLMAN_GPU_FRAMEWORK") {
+        Ok(env) => match env.as_ref() {
+            "cuda" => Framework::Cuda,
+            "opencl" => Framework::Opencl,
+            _ => device.framework(),
+        },
+        Err(_) => device.framework(),
+    };
+    program_use_framework::<E>(device, &framework)
 }
 
 /// Returns the program for the specified [`rust_gpu_tools::device::Framework`].
