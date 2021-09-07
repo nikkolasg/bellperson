@@ -244,6 +244,7 @@ struct Record {
     batch_all_ms: u32,         // time ot verify all proofs via batching at once
     aggregate_size_bytes: u32, // size of the aggregated proof
     batch_size_bytes: u32,     // size of the batch of proof
+    unserialize_time: u32,     // time to unsereliaze the proof
 }
 
 impl Record {
@@ -256,6 +257,7 @@ impl Record {
             acc.batch_all_ms += r.batch_all_ms;
             acc.aggregate_size_bytes += r.aggregate_size_bytes;
             acc.batch_size_bytes += r.batch_size_bytes;
+            acc.unserialize_time += r.unserialize_time;
             acc
         });
         let n = records.len() as u32;
@@ -266,12 +268,12 @@ impl Record {
         agg.batch_all_ms /= n;
         agg.aggregate_size_bytes /= n;
         agg.batch_size_bytes /= n;
+        agg.unserialize_time /= n;
         agg
     }
 }
 
 #[test]
-#[ignore]
 fn test_groth16_bench() {
     let n_average = 3; // number of times we do the benchmarking to average out results
     let nb_proofs = vec![8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
@@ -323,6 +325,8 @@ fn test_groth16_bench() {
             let deserialized =
                 AggregateProof::<Bls12>::read(std::io::Cursor::new(&buffer)).unwrap();
 
+            let unserialize_time = start.elapsed().as_millis();
+            println!("\t-Unserizalization time...{:?}",start.elapsed());
             let result = verify_aggregate_proof(
                 &vk,
                 &pvk,
@@ -335,44 +339,44 @@ fn test_groth16_bench() {
             let verifier_time = start.elapsed().as_millis();
 
             println!("\t-Batch per 10 packets verification...");
-            let batches: Vec<_> = proofs
-                .iter()
-                .cloned()
-                .take(i)
-                .zip(statements.iter().cloned().take(i))
-                .chunks(10)
-                .into_iter()
-                .map(|s| s.collect())
-                .collect::<Vec<Vec<(Proof<Bls12>, Vec<Fr>)>>>();
-            let start = Instant::now();
-            batches.par_iter().for_each(|batch| {
-                let batch_proofs = batch.iter().by_ref().map(|(p, _)| p).collect::<Vec<_>>();
-                let batch_statements = batch
-                    .iter()
-                    .map(|(_, state)| state.clone())
-                    .collect::<Vec<_>>();
-                let mut rng = rand_chacha::ChaChaRng::seed_from_u64(0u64);
-                assert!(
-                    verify_proofs_batch(&pvk, &mut rng, &batch_proofs, &batch_statements).unwrap()
-                )
-            });
-            let batch_verifier_time = start.elapsed().as_millis();
-
-            println!("\t-Batch all-in verification...");
-            let proofs_serialized = proofs.iter().take(i).map(|p| {
-                let mut buff = Vec::new();
-                p.write(&mut buff).unwrap();
-                buff
-            });
-            let start = Instant::now();
-            let proofs: Vec<_> = proofs_serialized
-                .into_iter()
-                .map(|buff| Proof::<Bls12>::read(std::io::Cursor::new(&buff)).unwrap())
-                .collect::<Vec<_>>();
-            let proofs_ref: Vec<_> = proofs.iter().collect();
-
-            assert!(verify_proofs_batch(&pvk, &mut rng, &proofs_ref, &statements[..i]).unwrap());
-            let batch_all_time = start.elapsed().as_millis();
+//            let batches: Vec<_> = proofs
+//                .iter()
+//                .cloned()
+//                .take(i)
+//                .zip(statements.iter().cloned().take(i))
+//                .chunks(10)
+//                .into_iter()
+//                .map(|s| s.collect())
+//                .collect::<Vec<Vec<(Proof<Bls12>, Vec<Fr>)>>>();
+//            let start = Instant::now();
+//            batches.par_iter().for_each(|batch| {
+//                let batch_proofs = batch.iter().by_ref().map(|(p, _)| p).collect::<Vec<_>>();
+//                let batch_statements = batch
+//                    .iter()
+//                    .map(|(_, state)| state.clone())
+//                    .collect::<Vec<_>>();
+//                let mut rng = rand_chacha::ChaChaRng::seed_from_u64(0u64);
+//                assert!(
+//                    verify_proofs_batch(&pvk, &mut rng, &batch_proofs, &batch_statements).unwrap()
+//                )
+//            });
+            let batch_verifier_time = 0;
+//
+//            println!("\t-Batch all-in verification...");
+//            let proofs_serialized = proofs.iter().take(i).map(|p| {
+//                let mut buff = Vec::new();
+//                p.write(&mut buff).unwrap();
+//                buff
+//            });
+//            let start = Instant::now();
+//            let proofs: Vec<_> = proofs_serialized
+//                .into_iter()
+//                .map(|buff| Proof::<Bls12>::read(std::io::Cursor::new(&buff)).unwrap())
+//                .collect::<Vec<_>>();
+//            let proofs_ref: Vec<_> = proofs.iter().collect();
+//
+//            assert!(verify_proofs_batch(&pvk, &mut rng, &proofs_ref, &statements[..i]).unwrap());
+            let batch_all_time = 0;
             let agg_size = buffer.len();
             records.push(Record {
                 nproofs: i as u32,
@@ -382,6 +386,7 @@ fn test_groth16_bench() {
                 batch_verify_ms: batch_verifier_time as u32,
                 batch_size_bytes: (proof_size * i) as u32,
                 batch_all_ms: batch_all_time as u32,
+                unserialize_time: unserialize_time as u32,
             });
         }
         let average = Record::average(&records);
